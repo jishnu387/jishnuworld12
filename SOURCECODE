@@ -1,0 +1,99 @@
+!pip install -q pandas numpy matplotlib scikit-learn tensorflow gradio
+from google.colab import files
+uploaded = files.upload()
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+
+file_name = list(uploaded.keys())[0]
+df = pd.read_csv(file_name)
+
+# Focus on 'Close' prices
+close_prices = df['Close'].values.reshape(-1, 1)
+
+# Normalize the close prices
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(close_prices)
+def create_dataset(dataset, time_step=10):
+    X, y = [], []
+    for i in range(len(dataset) - time_step):
+        X.append(dataset[i:i + time_step].flatten())
+        y.append(dataset[i + time_step])
+    return np.array(X), np.array(y)
+
+time_step = 10
+X_flat, y = create_dataset(scaled_data, time_step)
+
+# Display as table
+X_df = pd.DataFrame(X_flat, columns=[f'TimeStep_{i+1}' for i in range(time_step)])
+y_df = pd.DataFrame(y, columns=['Target'])
+full_df = pd.concat([X_df, y_df], axis=1)
+print("\nInput Features + Target:")
+print(full_df.head())
+
+# Reshape for LSTM input
+X = X_flat.reshape(X_flat.shape[0], time_step, 1)
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+
+model = Sequential([
+    LSTM(50, return_sequences=True, input_shape=(time_step, 1)),
+    LSTM(50),
+    Dense(1)
+])
+model.compile(loss='mean_squared_error', optimizer='adam')
+print("\nTraining model...")
+model.fit(X, y, epochs=50, batch_size=1, verbose=1)
+predicted = model.predict(X)
+predicted_prices = scaler.inverse_transform(predicted)
+actual_prices = scaler.inverse_transform(y)
+
+plt.figure(figsize=(10, 6))
+plt.plot(actual_prices, label='Actual')
+plt.plot(predicted_prices, label='Predicted')
+plt.title("Actual vs Predicted Stock Prices")
+plt.xlabel("Time")
+plt.ylabel("Price")
+plt.legend()
+plt.grid(True)
+plt.show()
+def predict_next_close(input_data):
+    input_scaled = scaler.transform(np.array(input_data).reshape(-1, 1))
+    X_input = input_scaled[-time_step:].reshape(1, time_step, 1)
+    prediction = model.predict(X_input, verbose=0)
+    predicted_price = scaler.inverse_transform(prediction)
+    return round(predicted_price[0][0], 2)
+import gradio as gr
+import pandas as pd
+
+def predict_from_csv(file):
+    try:
+        # Read uploaded CSV
+        df_uploaded = pd.read_csv(file.name)
+
+        # Ensure 'Close' column exists
+        if 'Close' not in df_uploaded.columns:
+            return "❌ CSV must contain a 'Close' column."
+
+        # Get last 10 close prices
+        last_10 = df_uploaded['Close'].dropna().values[-time_step:]
+        if len(last_10) < time_step:
+            return f"❌ The file must contain at least {time_step} 'Close' prices."
+
+        predicted_price = predict_next_close(last_10)
+        return f"✅ Predicted Next Close Price: ${predicted_price}"
+
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+# Gradio interface with CSV upload
+app = gr.Interface(
+    fn=predict_from_csv,
+    inputs=gr.File(label="Upload CSV with 'Close' column"),
+    outputs=gr.Textbox(label="Prediction Result"),
+    title="📈 AI-Driven Stock Price Predictor",
+    description="Upload a CSV file containing a 'Close' column. The last 10 closing prices will be used to predict the next one."
+)
+
+app.launch()
